@@ -27,7 +27,7 @@ _DEPENDENCIES = [
     # downstream dependencies
     'funcsigs==1.0.2',
     'google-api-core>=2.7.3,<=2.25.1',
-    'google-auth-httplib2<=0.2.0',
+    'google-auth-httplib2>=0.3.0,<=0.4.0',
     'httplib2<=0.22.0',
     'protobuf>=3.19.0,<=6.32.0',
     'pyasn1<=0.6.0',

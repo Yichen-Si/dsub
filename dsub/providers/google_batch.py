@@ -546,7 +546,15 @@ class GoogleBatchJobProvider(google_utils.GoogleJobProviderBase):
     batch_job_id = job_metadata.get('job-id')
     return f'{batch_job_id}-{task_id}-{task_attempt}'
 
-  def _get_gcs_volumes(self, mounts) -> List[batch_v1.types.Volume]:
+  def _get_gcs_mount_options(self, user_project: str) -> List[str]:
+    mount_options = ['-o ro']
+    if user_project:
+      mount_options.append('--billing-project={}'.format(user_project))
+    return mount_options
+
+  def _get_gcs_volumes(
+      self, mounts, user_project: str
+  ) -> List[batch_v1.types.Volume]:
     # Return a list of GCS volumes for the Batch Job request.
     gcs_volumes = []
     for gcs_mount in param_util.get_gcs_mounts(mounts):
@@ -554,7 +562,9 @@ class GoogleBatchJobProvider(google_utils.GoogleJobProviderBase):
       # Normalize mount path because API does not allow trailing slashes
       normalized_mount_path = os.path.normpath(mount_path)
       gcs_volume = google_batch_operations.build_gcs_volume(
-          gcs_mount.value[len('gs://') :], normalized_mount_path, ['-o ro']
+          gcs_mount.value[len('gs://') :],
+          normalized_mount_path,
+          self._get_gcs_mount_options(user_project),
       )
       gcs_volumes.append(gcs_volume)
     return gcs_volumes
@@ -666,7 +676,7 @@ class GoogleBatchJobProvider(google_utils.GoogleJobProviderBase):
     inputs = job_params['inputs'] | task_params['inputs']
     outputs = job_params['outputs'] | task_params['outputs']
     mounts = job_params['mounts']
-    gcs_volumes = self._get_gcs_volumes(mounts)
+    gcs_volumes = self._get_gcs_volumes(mounts, user_project)
 
     prepare_env = google_batch_operations.build_environment(
         self._get_prepare_env(
@@ -818,7 +828,12 @@ class GoogleBatchJobProvider(google_utils.GoogleJobProviderBase):
 
     boot_disk = google_batch_operations.build_persistent_disk(
         size_gb=max(boot_disk_size, job_model.LARGE_BOOT_DISK_SIZE),
-        disk_type=job_model.DEFAULT_DISK_TYPE,
+        disk_type=(
+            job_resources.disk_type
+            if job_resources.disk_type
+            and job_resources.disk_type != 'local-ssd'
+            else job_model.DEFAULT_DISK_TYPE
+        ),
         image=boot_disk_image,
     )
     disk = google_batch_operations.build_persistent_disk(
