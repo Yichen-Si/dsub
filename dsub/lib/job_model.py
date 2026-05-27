@@ -121,6 +121,24 @@ def validate_bucket_name(bucket):
     raise ValueError('Invalid bucket name: %s' % bucket)
 
 
+def validate_gcs_mount_path(path):
+  """Validate that the path is a GCS bucket or bucket subdirectory."""
+  if not path.startswith('gs://'):
+    raise ValueError(
+        'Invalid GCS mount path "%s". Must start with "gs://".' % path)
+
+  path_without_scheme = path[len('gs://'):]
+  bucket_name = path_without_scheme.split('/', 1)[0]
+  if not re.search(r'^\w[\w_\.-]{1,61}\w$', bucket_name):
+    raise ValueError('Invalid bucket name: %s' % path)
+
+  if len(path_without_scheme.split('/', 1)) == 2:
+    mount_prefix = path_without_scheme.split('/', 1)[1]
+    if any(char in mount_prefix for char in '*?[]'):
+      raise ValueError('Wildcards are not supported in GCS mount paths: %s' %
+                       path)
+
+
 class UriParts(str):
   """Subclass string for multipart URIs.
 
@@ -384,10 +402,10 @@ class MountParam(FileParam):
 
 
 class GCSMountParam(MountParam):
-  """A MountParam representing a Cloud Storage bucket to mount via gcsfuse."""
+  """A MountParam representing a Cloud Storage path to mount via gcsfuse."""
 
   def __new__(cls, name, value, docker_path):
-    validate_bucket_name(value)
+    validate_gcs_mount_path(value)
     return super(GCSMountParam, cls).__new__(cls, name, value, docker_path)
 
 

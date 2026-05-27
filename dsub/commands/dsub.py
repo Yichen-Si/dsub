@@ -691,16 +691,15 @@ def _get_job_metadata(provider, user_id, job_name, script, task_ids,
     # having a low-likelihood of collisions.
     #
     # For expressiveness, we:
-    # * use the job name (truncated at 10 characters).
-    # * insert the user-id
+    # * use the job name (truncated at 20 characters).
     # * add a datetime value
     # To have a high likelihood of uniqueness, the datetime value is out to
     # hundredths of a second.
     #
     # The full job-id is:
-    #   <job-name>--<user-id>--<timestamp>
-    job_metadata['job-id'] = '%s--%s--%s' % (
-        job_metadata['job-name'][:10], job_metadata['user-id'],
+    #   <job-name>-<timestamp>
+    job_metadata['job-id'] = '%s-%s' % (
+        job_metadata['job-name'][:20],
         create_time.strftime('%y%m%d-%H%M%S-%f')[:16])
 
   job_metadata['create-time'] = create_time

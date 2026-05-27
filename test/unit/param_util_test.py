@@ -360,6 +360,36 @@ class FileParamUtilTest(unittest.TestCase):
     self.assertEqual(param.file_provider, provider)
 
 
+class MountParamUtilTest(unittest.TestCase):
+
+  @parameterized.parameterized.expand([
+      ('bucket', 'gs://bucket-name', 'mount/gs/bucket-name/'),
+      ('subdir', 'gs://bucket-name/path/to/data',
+       'mount/gs/bucket-name/path/to/data/'),
+      ('subdir_with_slash', 'gs://bucket-name/path/to/data/',
+       'mount/gs/bucket-name/path/to/data/'),
+  ])
+  def test_gcs_mount_docker_rewrite(self, unused_name, uri, docker):
+    del unused_name
+    mount_param_util = param_util.MountParamUtil('mount')
+    param = mount_param_util.make_param('TEST_MOUNT', uri, disk_size=None)
+    self.assertIsInstance(param, job_model.GCSMountParam)
+    self.assertEqual('TEST_MOUNT', param.name)
+    self.assertEqual(uri, param.value)
+    self.assertEqual(docker, param.docker_path)
+
+  @parameterized.parameterized.expand([
+      ('missing_bucket', 'gs://'),
+      ('bad_bucket', 'gs://' + 'b' * 64),
+      ('wildcard', 'gs://bucket-name/path/*'),
+  ])
+  def test_gcs_mount_invalid_path(self, unused_name, uri):
+    del unused_name
+    mount_param_util = param_util.MountParamUtil('mount')
+    with self.assertRaises(ValueError):
+      mount_param_util.make_param('TEST_MOUNT', uri, disk_size=None)
+
+
 TASK_DESCRIPTORS = [
     job_model.TaskDescriptor(
         None, {
