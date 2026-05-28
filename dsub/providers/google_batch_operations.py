@@ -165,6 +165,7 @@ def build_task_spec(
     runnables: List[batch_v1.types.task.Runnable],
     volumes: List[batch_v1.types.Volume],
     max_run_duration: str,
+    max_retry_count: int = None,
 ) -> batch_v1.types.TaskSpec:
   """Build a TaskSpec object for a Batch request.
 
@@ -179,6 +180,8 @@ def build_task_spec(
   task_spec.runnables = runnables
   task_spec.volumes = volumes
   task_spec.max_run_duration = max_run_duration
+  if max_retry_count:
+    task_spec.max_retry_count = max_retry_count
   return task_spec
 
 

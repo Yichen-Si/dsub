@@ -915,7 +915,10 @@ class GoogleBatchJobProvider(google_utils.GoogleJobProviderBase):
 
     # Bring together the task definition(s) and build the Job request.
     task_spec = google_batch_operations.build_task_spec(
-        runnables=runnables, volumes=([datadisk_volume] + gcs_volumes), max_run_duration=job_resources.timeout
+        runnables=runnables,
+        volumes=([datadisk_volume] + gcs_volumes),
+        max_run_duration=job_resources.timeout,
+        max_retry_count=job_resources.max_retries,
     )
     task_group = google_batch_operations.build_task_group(
         task_spec, task_count=1, task_count_per_node=1

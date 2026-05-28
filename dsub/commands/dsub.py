@@ -1287,7 +1287,10 @@ def run(provider,
   else:
     raise ValueError('One of --command or a script name must be supplied')
 
-  if retries and not wait:
+  native_batch_retries = (
+      provider.__class__.__name__ == 'GoogleBatchJobProvider')
+
+  if retries and not wait and not native_batch_retries:
     raise ValueError('Requesting retries requires requesting wait')
 
   if summary and not wait:
