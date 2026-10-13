@@ -70,7 +70,7 @@ def make_runtime_dirs_command(script_dir: str, tmp_dir: str,
 
 # Action steps that interact with GCS need gsutil and Python.
 # Use the 'slim' variant of the cloud-sdk image as it is much smaller.
-CLOUD_SDK_IMAGE = 'gcr.io/google.com/cloudsdktool/cloud-sdk:294.0.0-slim'
+CLOUD_SDK_IMAGE = 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
 
 # Name of the data disk
 DATA_DISK_NAME = 'datadisk'
@@ -274,7 +274,7 @@ PREPARE_CMD = textwrap.dedent("""\
   {mk_runtime_dirs}
 
   echo "${{{script_var}}}" \
-    | python -c '{python_decode_script}' \
+    | python3 -c '{python_decode_script}' \
     > "{script_path}"
   chmod a+x "{script_path}"
 
