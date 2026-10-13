@@ -87,7 +87,9 @@ class TextOutput(OutputFormatter):
 
   # With text output, we need to pay attention to total line length.
   #
-  # The default columns are: job-name, task-id, last-update, status-message.
+  # The default columns are: job-name, task-id, last-update, run-time,
+  #   status-message. run-time ([Nd ]H:MM:SS) is usually 7-8 characters and is
+  #   not counted in the 80-character budget below.
   #   The Job Name is typically short, but there's nothing to enforce that.
   #   The task-id is typically going to be less than 5 characters (99999)
   #     (and the column heading is "Task").
@@ -153,6 +155,7 @@ class TextOutput(OutputFormatter):
         ('status-message', 'Status', self._format_status),
         ('status-detail', 'Status Details'),
         ('last-update', 'Last Update', self._text_format_date),
+        ('run-time', 'Run Time'),
         ('create-time', 'Created', self._text_format_date),
         ('start-time', 'Started', self._text_format_date),
         ('end-time', 'Ended', self._text_format_date),
@@ -289,6 +292,45 @@ def prepare_summary_table(rows):
   return new_rows
 
 
+def format_run_time(seconds):
+  """Format a duration in seconds as [Nd ]H:MM:SS."""
+  seconds = max(0, int(seconds))
+  days, seconds = divmod(seconds, 86400)
+  hours, seconds = divmod(seconds, 3600)
+  minutes, seconds = divmod(seconds, 60)
+  text = '%d:%02d:%02d' % (hours, minutes, seconds)
+  return '%dd %s' % (days, text) if days else text
+
+
+def get_run_time(task, now=None):
+  """Time a task has been running (if active) or ran (if finished).
+
+  Measured from start-time to end-time, or to now while the task is still
+  RUNNING. Returns None when the task has not started (e.g. queued, or
+  waiting on dependencies) or the provider does not report a start time.
+
+  Args:
+    task: a provider Task.
+    now: timezone-aware "current" time; defaults to datetime.now(UTC).
+
+  Returns:
+    A formatted duration string, or None.
+  """
+  start = task.get_field('start-time')
+  if not isinstance(start, datetime.datetime):
+    return None
+  end = task.get_field('end-time')
+  if not isinstance(end, datetime.datetime):
+    if task.get_field('status') != 'RUNNING':
+      return None
+    end = now or datetime.datetime.now(datetime.timezone.utc)
+  if (start.tzinfo is None) != (end.tzinfo is None):
+    # Mixed naive/aware values: treat naive times as local time.
+    start = start if start.tzinfo else start.replace(tzinfo=tzlocal())
+    end = end if end.tzinfo else end.replace(tzinfo=tzlocal())
+  return format_run_time((end - start).total_seconds())
+
+
 def prepare_row(task, full, summary):
   """return a dict with the task's info (more if "full" is set)."""
 
@@ -303,6 +345,7 @@ def prepare_row(task, full, summary):
       row_spec('job-name', True, None),
       row_spec('task-id', False, None),
       row_spec('last-update', True, None),
+      row_spec('run-time', True, None),
       row_spec('status-message', True, None)
   ]
   full_columns = default_columns + [
@@ -351,7 +394,11 @@ def prepare_row(task, full, summary):
   for col in columns:
     key, required, default = col
 
-    value = task.get_field(key, default)
+    if key == 'run-time':
+      # Derived from start/end times rather than read from the provider.
+      value = get_run_time(task)
+    else:
+      value = task.get_field(key, default)
     if required or value is not None:
       row[key] = value
 

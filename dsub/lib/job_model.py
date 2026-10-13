@@ -465,6 +465,8 @@ class Resources(
         'block_external_network',
         'boot_disk_image',
         'install_gpu_drivers',
+        'batch_after',
+        'batch_after_condition',
     ])):
   """Job resource parameters related to CPUs, memory, and disk.
 
@@ -506,6 +508,10 @@ class Resources(
       external network.
     boot_disk_image (str): Custom boot disk image to use
     install_gpu_drivers (bool): Whether to install GPU drivers.
+    batch_after (List[str]): dsub job-ids this job depends on, enforced by
+      the Batch service (google-batch provider, Batch API v1alpha).
+    batch_after_condition (str): dependency condition: 'succeeded',
+      'failed', or 'finished'.
   """
   __slots__ = ()
 
@@ -539,7 +545,9 @@ class Resources(
               max_preemptible_attempts=None,
               block_external_network=None,
               boot_disk_image=None,
-              install_gpu_drivers=None):
+              install_gpu_drivers=None,
+              batch_after=None,
+              batch_after_condition=None):
     return super(Resources,
                  cls).__new__(cls, min_cores, min_ram, machine_type, disk_size,
                               disk_type, boot_disk_size, preemptible, image,
@@ -550,7 +558,8 @@ class Resources(
                               log_interval, ssh, enable_stackdriver_monitoring,
                               max_retries, max_preemptible_attempts,
                               block_external_network, boot_disk_image,
-                              install_gpu_drivers)
+                              install_gpu_drivers, batch_after,
+                              batch_after_condition)
 
 
 def ensure_job_params_are_complete(job_params):
@@ -739,6 +748,12 @@ class JobDescriptor(object):
     if job_resources.logging:
       job['logging'] = str(job_resources.logging.uri)
 
+    # Server-side dependencies (google-batch), kept for dstat --full.
+    if job_resources.batch_after:
+      job['batch-after'] = list(job_resources.batch_after)
+      job['batch-after-condition'] = (
+          job_resources.batch_after_condition or 'succeeded')
+
     job['labels'] = {var.name: var.value for var in job_params['labels']}
 
     job['envs'] = {var.name: var.value for var in job_params['envs']}
@@ -859,7 +874,10 @@ class JobDescriptor(object):
     job_create_time = job.get('create-time')
     cls._set_metadata_create_time(job_metadata, job_create_time)
 
-    job_resources = Resources(logging=job.get('logging'))
+    job_resources = Resources(
+        logging=job.get('logging'),
+        batch_after=job.get('batch-after'),
+        batch_after_condition=job.get('batch-after-condition'))
 
     job_params = {}
     job_params['labels'] = cls._label_params_from_dict(job.get('labels', {}))

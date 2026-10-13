@@ -54,7 +54,10 @@ def get_provider(args, resources, credentials_fn=None):
 
   if provider == 'google-batch':
     return google_batch.GoogleBatchJobProvider(
-        getattr(args, 'dry_run', False), args.project, args.location)
+        getattr(args, 'dry_run', False),
+        args.project,
+        args.location,
+        api_version=getattr(args, 'batch_api_version', None))
   elif provider == 'google-cls-v2':
     return google_cls_v2.GoogleCLSV2JobProvider(
         getattr(args, 'dry_run', False),
