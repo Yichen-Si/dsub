@@ -189,7 +189,7 @@ _CONTINUOUS_LOGGING_CMD = textwrap.dedent("""\
 
   # Prep the log filter script
   echo "${{{log_filter_var}}}" \
-    | python -c '{python_decode_script}' \
+    | python3 -c '{python_decode_script}' \
     > "{log_filter_script_path}"
   chmod a+x "{log_filter_script_path}"
 
