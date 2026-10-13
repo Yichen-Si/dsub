@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Utility routines for constructing a Google Batch API request."""
+import os
 from typing import List, Optional, Dict, MutableSequence
 
 # pylint: disable=g-import-not-at-top
@@ -20,7 +21,85 @@ try:
 except ImportError:
   # TODO: Remove conditional import when batch library is available
   from . import batch_dummy as batch_v1
+try:
+  from google.cloud import batch_v1alpha
+except ImportError:
+  batch_v1alpha = None
 # pylint: enable=g-import-not-at-top
+
+# Batch API versions usable by the google-batch provider. v1 is the default;
+# v1alpha is a superset that adds job dependencies. Enum values are identical
+# across the two, so objects read with either version compare consistently.
+BATCH_API_VERSIONS = ('v1', 'v1alpha')
+_BATCH_API_MODULES = {'v1': batch_v1, 'v1alpha': batch_v1alpha}
+DEPENDENCY_CONDITIONS = ('succeeded', 'failed', 'finished')
+
+
+def default_api_version() -> str:
+  return os.environ.get('DSUB_BATCH_API_VERSION', 'v1')
+
+
+def select_api(version: Optional[str] = None):
+  """Select the Batch API version used to build and send requests.
+
+  Rebinds this module's batch_v1 alias so every builder below emits types of
+  the selected version.
+
+  Args:
+    version: 'v1' or 'v1alpha'; None uses $DSUB_BATCH_API_VERSION or 'v1'.
+
+  Returns:
+    The selected google.cloud batch module.
+
+  Raises:
+    ValueError: if the version is unknown or not installed.
+  """
+  global batch_v1
+  version = version or default_api_version()
+  if version not in BATCH_API_VERSIONS:
+    raise ValueError(f'Unsupported Batch API version: {version}')
+  module = _BATCH_API_MODULES[version]
+  if module is None:
+    raise ValueError(f'Batch API {version} is not available in the installed '
+                     'google-cloud-batch library')
+  batch_v1 = module
+  return module
+
+
+def build_job_dependency(job_names: List[str], condition: str):
+  """Build a JobDependency (Batch API v1alpha) on fully qualified job names.
+
+  Args:
+    job_names: projects/<p>/locations/<l>/jobs/<id> names to depend on.
+    condition: one of DEPENDENCY_CONDITIONS.
+
+  Returns:
+    A JobDependency object.
+
+  Raises:
+    ValueError: if the selected API version lacks job dependencies.
+  """
+  if not hasattr(batch_v1, 'JobDependency'):
+    raise ValueError('Job dependencies require Batch API v1alpha')
+  dep_type = batch_v1.JobDependency.Type[condition.upper()]
+  return batch_v1.JobDependency(items={name: dep_type for name in job_names})
+
+
+def get_state_name(op: batch_v1.types.Job) -> str:
+  """Return the Batch job state name (e.g. QUEUED, SCHEDULED, RUNNING).
+
+  Falls back to the latest state transition event when the client enum does
+  not name the state. Note that jobs held on dependencies report QUEUED; the
+  WAITING state only appears in their transition events.
+  """
+  state = op.status.state
+  name = getattr(state, 'name', None)
+  if name and name != 'STATE_UNSPECIFIED':
+    return name
+  for event in reversed(op.status.status_events):
+    if event.description.startswith('Job state is set from '):
+      return event.description.split(' to ')[1].split()[0]
+  return str(state)
 
 
 def label_filter(label_key: str, label_value: str) -> str:
@@ -43,28 +122,30 @@ def get_environment(
   return runnables[runnable_index].environment.variables
 
 
+def _state_in(op: batch_v1.types.Job, *names: str) -> bool:
+  # Compare by name: proto-plus enums of different API versions (v1 and
+  # v1alpha) never compare equal, even when their values match.
+  return getattr(op.status.state, 'name', None) in names
+
+
 def is_done(op: batch_v1.types.Job) -> bool:
   """Return whether the operation has been marked done."""
-  return op.status.state in [
-      batch_v1.types.job.JobStatus.State.SUCCEEDED,
-      batch_v1.types.job.JobStatus.State.FAILED,
-      batch_v1.types.job.JobStatus.State.CANCELLED,
-  ]
+  return _state_in(op, 'SUCCEEDED', 'FAILED', 'CANCELLED')
 
 
 def is_success(op: batch_v1.types.Job) -> bool:
   """Return whether the operation has completed successfully."""
-  return op.status.state == batch_v1.types.job.JobStatus.State.SUCCEEDED
+  return _state_in(op, 'SUCCEEDED')
 
 
 def is_canceled(op: batch_v1.types.Job) -> bool:
   """Return whether the operation was canceled by the user."""
-  return op.status.state == batch_v1.types.job.JobStatus.State.CANCELLED
+  return _state_in(op, 'CANCELLED')
 
 
 def is_failed(op: batch_v1.types.Job) -> bool:
   """Return whether the operation has failed."""
-  return op.status.state == batch_v1.types.job.JobStatus.State.FAILED
+  return _state_in(op, 'FAILED')
 
 
 def _pad_timestamps(ts: str) -> str:
@@ -99,11 +180,40 @@ def get_status_events(op: batch_v1.types.Job):
   return op.status.status_events
 
 
+def _state_event_time(op: batch_v1.types.Job, to_states, first: bool):
+  """Time string of the first/last event moving the job into to_states."""
+  times = []
+  for event in op.status.status_events:
+    description = event.description
+    if not description.startswith('Job state is set from '):
+      continue
+    new_state = description.split(' to ')[-1].split()[0]
+    if new_state in to_states:
+      times.append(_pad_timestamps(event.event_time.rfc3339()))
+  if not times:
+    return None
+  return times[0] if first else times[-1]
+
+
+def get_start_time(op: batch_v1.types.Job) -> Optional[str]:
+  """Return the time the job first entered RUNNING, if it has started."""
+  return _state_event_time(op, ('RUNNING',), first=True)
+
+
+def get_end_time(op: batch_v1.types.Job) -> Optional[str]:
+  """Return the time the job reached a terminal state, if it is done."""
+  if not is_done(op):
+    return None
+  return _state_event_time(op, ('SUCCEEDED', 'FAILED', 'CANCELLED'),
+                           first=False) or get_update_time(op)
+
+
 def get_preemptible(op: batch_v1.types.Job) -> bool:
-  pm = op.allocation_policy.instances[0].policy.provisioning_model
-  if pm == batch_v1.AllocationPolicy.ProvisioningModel.SPOT:
+  pm = getattr(op.allocation_policy.instances[0].policy.provisioning_model,
+               'name', None)
+  if pm == 'SPOT':
     return True
-  elif pm == batch_v1.AllocationPolicy.ProvisioningModel.STANDARD:
+  elif pm == 'STANDARD':
     return False
   else:
     raise ValueError(f'Invalid provisioning_model value: {pm}')
@@ -152,12 +262,15 @@ def build_job(
     allocation_policy: batch_v1.types.AllocationPolicy,
     labels: Dict[str, str],
     logs_policy: batch_v1.types.LogsPolicy,
+    dependencies=None,
 ) -> batch_v1.types.Job:
   job = batch_v1.Job()
   job.task_groups = task_groups
   job.allocation_policy = allocation_policy
   job.labels = labels
   job.logs_policy = logs_policy
+  if dependencies:
+    job.dependencies = dependencies
   return job
 
 

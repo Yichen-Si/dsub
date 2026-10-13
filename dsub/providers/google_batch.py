@@ -42,6 +42,12 @@ except ImportError:
   # TODO: Remove conditional import when batch library is available
   from . import batch_dummy as batch_v1
 # pylint: enable=g-import-not-at-top
+
+
+def _select_batch_api(version: str):
+  """Point this module and google_batch_operations at one Batch API version."""
+  global batch_v1
+  batch_v1 = google_batch_operations.select_api(version)
 _PROVIDER_NAME = 'google-batch'
 # Index of the prepare action in the runnable list
 _PREPARE_INDEX = 1
@@ -355,6 +361,12 @@ class GoogleBatchOperation(base.Task):
           'zones': google_batch_operations.get_zones(self._op),
           'preemptible': google_batch_operations.get_preemptible(self._op),
       }
+      resources = (
+          self._job_descriptor.job_resources if self._job_descriptor else None)
+      if resources and resources.batch_after:
+        value['batch-after'] = list(resources.batch_after)
+        value['batch-after-condition'] = (
+            resources.batch_after_condition or 'succeeded')
     elif field == 'events':
       value = GoogleBatchEventMap(self._op).get_filtered_normalized_events()
     elif field == 'script-name':
@@ -362,14 +374,20 @@ class GoogleBatchOperation(base.Task):
         value = self._job_descriptor.job_metadata.get(field)
     elif field == 'script':
       value = self._try_op_to_script_body()
-    elif field == 'create-time' or field == 'start-time':
-      # TODO: Does Batch offer a start or end-time?
-      # Check http://shortn/_FPYmD1weUF
+    elif field == 'create-time':
       ds = google_batch_operations.get_create_time(self._op)
       value = google_base.parse_rfc3339_utc_string(ds)
-    elif field == 'end-time' or field == 'last-update':
-      # TODO: Does Batch offer an end-time?
-      # Check http://shortn/_FPYmD1weUF
+    elif field == 'start-time':
+      # Batch has no start-time field; use the first transition to RUNNING.
+      ds = google_batch_operations.get_start_time(self._op)
+      if ds:
+        value = google_base.parse_rfc3339_utc_string(ds)
+    elif field == 'end-time':
+      # Time of the terminal state transition; unset while the job is active.
+      ds = google_batch_operations.get_end_time(self._op)
+      if ds:
+        value = google_base.parse_rfc3339_utc_string(ds)
+    elif field == 'last-update':
       ds = google_batch_operations.get_update_time(self._op)
       if ds:
         value = google_base.parse_rfc3339_utc_string(ds)
@@ -435,7 +453,17 @@ class GoogleBatchOperation(base.Task):
     detail = None
     status_events = google_batch_operations.get_status_events(self._op)
     if not google_batch_operations.is_done(self._op):
-      msg = 'RUNNING'
+      # Show the Batch state (QUEUED, SCHEDULED, RUNNING, or WAITING on
+      # dependencies); the canonical 'status' field stays RUNNING for all.
+      msg = google_batch_operations.get_state_name(self._op)
+      resources = (
+          self._job_descriptor.job_resources if self._job_descriptor else None)
+      # Batch reports QUEUED while dependencies are pending; the release is
+      # recorded as a "from WAITING to QUEUED" event.
+      if (msg == 'QUEUED' and resources and resources.batch_after and
+          not any(e.description.startswith('Job state is set from WAITING')
+                  for e in status_events)):
+        msg = 'WAITING'
     elif google_batch_operations.is_success(self._op):
       msg = 'SUCCESS'
     elif google_batch_operations.is_canceled(self._op):
@@ -474,7 +502,12 @@ class GoogleBatchJobProvider(google_utils.GoogleJobProviderBase):
   """dsub provider implementation managing Jobs on Google Cloud."""
 
   def __init__(
-      self, dry_run: bool, project: str, location: str, credentials=None
+      self,
+      dry_run: bool,
+      project: str,
+      location: str,
+      credentials=None,
+      api_version: str = None,
   ):
     storage_service = dsub_util.get_storage_service(credentials=credentials)
 
@@ -482,6 +515,48 @@ class GoogleBatchJobProvider(google_utils.GoogleJobProviderBase):
     self._location = location
     self._project = project
     self._storage_service = storage_service
+    self._api_version = (
+        api_version or google_batch_operations.default_api_version())
+    _select_batch_api(self._api_version)
+    self._dependency_names = []
+
+  def _resolve_batch_dependencies(self, job_ids: List[str],
+                                  condition: str) -> List[str]:
+    """Map dsub job-ids to the Batch job names of their tasks.
+
+    Each dsub task is one Batch job; when a task has several attempts, the
+    latest attempt is used.
+
+    Args:
+      job_ids: dsub job-ids (as printed by dsub) to depend on.
+      condition: dependency condition, used only for warnings.
+
+    Returns:
+      Fully qualified Batch job names.
+
+    Raises:
+      ValueError: if a job-id matches no Batch job.
+    """
+    names = []
+    for job_id in job_ids:
+      if job_id == dsub_util.NO_JOB:
+        # A skipped job (dsub --skip) counts as already succeeded.
+        continue
+      latest = {}
+      for op in self.lookup_job_tasks({'*'}, job_ids=[job_id]):
+        task_id = op.get_field('task-id') or ''
+        attempt = int(op.get_field('task-attempt') or 0)
+        if task_id not in latest or attempt > latest[task_id][0]:
+          latest[task_id] = (attempt, op)
+      if not latest:
+        raise ValueError(
+            f'--batch-after: no Batch job found for job-id {job_id}')
+      for _, op in latest.values():
+        names.append(op.get_field('internal-id'))
+        status = op.get_field('status')
+        if condition == 'succeeded' and status in ('FAILURE', 'CANCELED'):
+          print(f'WARNING: dependency {job_id} already ended with {status}')
+    return names
 
   def _batch_handler_def(self):
     return GoogleBatchBatchHandler
@@ -924,8 +999,16 @@ class GoogleBatchJobProvider(google_utils.GoogleJobProviderBase):
         task_spec, task_count=1, task_count_per_node=1
     )
 
+    dependencies = None
+    if self._dependency_names:
+      dependencies = [
+          google_batch_operations.build_job_dependency(
+              self._dependency_names,
+              job_resources.batch_after_condition or 'succeeded',
+          )
+      ]
     job = google_batch_operations.build_job(
-        [task_group], allocation_policy, labels, logs_policy
+        [task_group], allocation_policy, labels, logs_policy, dependencies
     )
 
     batch_job_id = self._format_batch_job_id(task_metadata, job_metadata)
@@ -958,6 +1041,21 @@ class GoogleBatchJobProvider(google_utils.GoogleJobProviderBase):
         output_providers=_SUPPORTED_OUTPUT_PROVIDERS,
         logging_providers=_SUPPORTED_LOGGING_PROVIDERS,
     )
+
+    # Resolve server-side dependencies once for all tasks of this job.
+    after = job_descriptor.job_resources.batch_after or []
+    condition = (
+        job_descriptor.job_resources.batch_after_condition or 'succeeded')
+    self._dependency_names = []
+    if after:
+      if not hasattr(batch_v1, 'JobDependency'):
+        raise ValueError('--batch-after requires Batch API v1alpha')
+      self._dependency_names = self._resolve_batch_dependencies(
+          after, condition)
+      if self._dependency_names:
+        print('Batch dependencies (%s): %s' % (
+            condition,
+            ', '.join(n.rsplit('/', 1)[-1] for n in self._dependency_names)))
 
     # Prepare and submit jobs.
     launched_tasks = []

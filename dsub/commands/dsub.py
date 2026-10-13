@@ -222,6 +222,13 @@ def _google_parse_arguments(args):
       raise ValueError('Wildcard zones not supported for google-batch.')
     if args.regions and any('*' in region for region in args.regions):
       raise ValueError('Wildcard regions not supported for google-batch.')
+    if args.batch_after:
+      if args.batch_api_version == 'v1':
+        raise ValueError('--batch-after requires --batch-api-version v1alpha')
+      args.batch_api_version = 'v1alpha'
+  elif args.batch_after:
+    raise ValueError('--batch-after is only supported by google-batch; '
+                     'use --after for client-side waiting.')
 
   _check_private_address(args)
   _check_nvidia_driver_version(args)
@@ -516,6 +523,30 @@ def _parse_arguments(prog, argv):
           using images with pre-installed drivers. Valid values: true, false.
           (default: auto-detect)""")
   google_common.add_argument(
+      '--batch-after',
+      nargs='+',
+      default=[],
+      metavar='JOB_ID',
+      help="""(google-batch only) dsub job-id(s) this job depends on. Unlike
+          --after, the dependency is enforced by the Batch service: the job is
+          submitted immediately and held in WAITING until every task of the
+          listed jobs meets --batch-after-condition; if a dependency can no
+          longer meet it, Batch fails this job. Requires Batch API v1alpha,
+          which is selected automatically. (default: none)""")
+  google_common.add_argument(
+      '--batch-after-condition',
+      choices=['succeeded', 'failed', 'finished'],
+      default='succeeded',
+      help="""(google-batch only) State the --batch-after jobs must reach
+          before this job may start. (default: succeeded)""")
+  google_common.add_argument(
+      '--batch-api-version',
+      choices=['v1', 'v1alpha'],
+      default=None,
+      help="""(google-batch only) Batch API version used to submit jobs.
+          Defaults to $DSUB_BATCH_API_VERSION or v1, and to v1alpha when
+          --batch-after is given.""")
+  google_common.add_argument(
       '--credentials-file',
       type=str,
       help='Path to a local file with JSON credentials for a service account.')
@@ -614,6 +645,9 @@ def _parse_arguments(prog, argv):
 
   if args.provider == 'google-cls-v2' or args.provider == 'google-batch':
     _google_parse_arguments(args)
+  elif args.batch_after:
+    raise ValueError('--batch-after is only supported by google-batch; '
+                     'use --after for client-side waiting.')
 
   return args
 
@@ -661,7 +695,9 @@ def _get_job_resources(args):
       max_preemptible_attempts=args.preemptible,
       block_external_network=args.block_external_network,
       boot_disk_image=args.boot_disk_image,
-      install_gpu_drivers=args.install_gpu_drivers)
+      install_gpu_drivers=args.install_gpu_drivers,
+      batch_after=getattr(args, 'batch_after', None) or None,
+      batch_after_condition=getattr(args, 'batch_after_condition', None))
 
 
 def _get_job_metadata(provider, user_id, job_name, script, task_ids,

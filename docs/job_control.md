@@ -101,6 +101,49 @@ If you'd like to be able to turn off your machine (perhaps it's a laptop and you
 a big job) then what you can do is put your dsub command itself into a script,
 and run that script using dsub itself.
 
+## Server-side dependencies with `--batch-after` (google-batch)
+
+With the `google-batch` provider, `--batch-after` records the dependency in the
+Batch job itself instead of blocking `dsub`. Each `dsub` call returns as soon as
+its job is created, so a whole pipeline can be submitted at once:
+
+```
+JOB_A=$(dsub ... --command 'echo "job A"')
+JOB_B=$(dsub ... --command 'echo "job B"')
+JOB_C=$(dsub ... --batch-after "${JOB_A}" "${JOB_B}" --command 'echo "job C"')
+```
+
+Batch holds job C in the `WAITING` state, using no VMs, until every task of
+jobs A and B satisfies `--batch-after-condition`: `succeeded` (default),
+`failed`, or `finished`. If a dependency can no longer satisfy the condition,
+for example a dependency fails when `succeeded` is required, Batch fails job C
+without running it. This failure cascades to anything that depends on C.
+
+Notes:
+
+* `--batch-after` takes `dsub` job-ids. `dsub` resolves each one to its Batch
+  jobs (one per task; the latest attempt when there are several) when it
+  submits. The dependencies therefore must already exist. `NO_JOB` (from
+  `--skip`) is treated as already succeeded.
+* Job dependencies exist only in the Batch API `v1alpha`. `--batch-after`
+  selects it automatically. `--batch-api-version` or the
+  `DSUB_BATCH_API_VERSION` environment variable select it explicitly; the
+  default is `v1`.
+* Task retries (`--retries`) happen inside a Batch job, so a preempted attempt
+  does not fail its dependents unless all retries are exhausted.
+* `dstat` shows waiting jobs with status `WAITING`, and their canonical status
+  is `RUNNING`. `dstat --full` lists a job's `batch-after` ids under
+  `provider-attributes`.
+
+## Run time in `dstat`
+
+The default `dstat` output includes a `Run Time` column (`[Nd ]H:MM:SS`). For a
+running task it is the time since the task started; for a finished task it is
+its start-to-end duration. It is blank for tasks that have not started yet,
+such as queued tasks or tasks waiting on dependencies. With the `google-batch`
+provider, the start is the first transition to `RUNNING` and the end is the
+transition to the final state.
+
 ## Using `--skip` to bypass jobs that have already run
 
 With the `--skip` parameter, `dsub` will skip running a job if all the outputs
