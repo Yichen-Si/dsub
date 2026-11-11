@@ -70,7 +70,9 @@ def make_runtime_dirs_command(script_dir: str, tmp_dir: str,
 
 # Action steps that interact with GCS need gsutil and Python.
 # Use the 'slim' variant of the cloud-sdk image as it is much smaller.
-CLOUD_SDK_IMAGE = 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+# Pinned: cloud-sdk 592.0.0-slim (2026-11-03, now :slim) dropped python3, which the
+# auxiliary runnables use to decode their payloads (exit 127). 591.0.0-slim verified 2026-11-10.
+CLOUD_SDK_IMAGE = 'gcr.io/google.com/cloudsdktool/cloud-sdk:591.0.0-slim'
 
 # Name of the data disk
 DATA_DISK_NAME = 'datadisk'

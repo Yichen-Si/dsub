@@ -995,6 +995,16 @@ class GoogleBatchJobProvider(google_utils.GoogleJobProviderBase):
         max_run_duration=job_resources.timeout,
         max_retry_count=job_resources.max_retries,
     )
+    # Opt-in for one-task-per-VM workloads whose requested machine is larger
+    # than the Batch API's default 2-vCPU/2-GiB task allocation.
+    task_cpu = os.environ.get('DSUB_BATCH_TASK_CPU_MILLI')
+    task_memory = os.environ.get('DSUB_BATCH_TASK_MEMORY_MIB')
+    if task_cpu or task_memory:
+      if not task_cpu or not task_memory or int(task_cpu) < 1 or int(task_memory) < 1:
+        raise ValueError('Both positive DSUB_BATCH_TASK_CPU_MILLI and '
+                         'DSUB_BATCH_TASK_MEMORY_MIB are required')
+      task_spec.compute_resource = batch_v1.ComputeResource(
+          cpu_milli=int(task_cpu), memory_mib=int(task_memory))
     task_group = google_batch_operations.build_task_group(
         task_spec, task_count=1, task_count_per_node=1
     )
